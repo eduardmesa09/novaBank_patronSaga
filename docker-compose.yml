@@ -1,0 +1,138 @@
+# NovaBank International · Patrón Saga
+#
+# Cada microservicio tiene SU PROPIA base de datos con SU PROPIO usuario:
+# accounts_db, risk_db, clearing_db, saga_db. Ningún servicio puede conectarse
+# a la base de otro. Al migrar a Supabase, cada una pasa a ser un proyecto
+# independiente y solo cambia su DATABASE_URL.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nova-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: nova-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prefect:
+    image: prefecthq/prefect:3-python3.11
+    container_name: nova-prefect
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_API_URL: http://prefect:4200/api
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_UI_API_URL: http://localhost:4200/api
+    ports:
+      - "4200:4200"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  accounts:
+    build: ./services/accounts
+    container_name: nova-accounts
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001
+    environment:
+      SERVICE_NAME: accounts
+      DATABASE_URL: postgresql+psycopg://accounts_user:accounts_pwd@postgres:5432/accounts_db
+      REDIS_URL: redis://redis:6379/0
+      STEP_DELAY_MIN: "2"
+      STEP_DELAY_MAX: "4"
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  risk:
+    build: ./services/risk
+    container_name: nova-risk
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002
+    environment:
+      SERVICE_NAME: risk
+      DATABASE_URL: postgresql+psycopg://risk_user:risk_pwd@postgres:5432/risk_db
+      REDIS_URL: redis://redis:6379/0
+      STEP_DELAY_MIN: "2"
+      STEP_DELAY_MAX: "4"
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  clearing:
+    build: ./services/clearing
+    container_name: nova-clearing
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003
+    environment:
+      SERVICE_NAME: clearing
+      DATABASE_URL: postgresql+psycopg://clearing_user:clearing_pwd@postgres:5432/clearing_db
+      REDIS_URL: redis://redis:6379/0
+      STEP_DELAY_MIN: "2"
+      STEP_DELAY_MAX: "4"
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build: ./gateway
+    container_name: nova-gateway
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      SERVICE_NAME: gateway
+      DATABASE_URL: postgresql+psycopg://saga_user:saga_pwd@postgres:5432/saga_db
+      REDIS_URL: redis://redis:6379/0
+      ACCOUNTS_URL: http://accounts:8001
+      RISK_URL: http://risk:8002
+      CLEARING_URL: http://clearing:8003
+      PREFECT_API_URL: http://prefect:4200/api
+      STEP_DELAY_MIN: "2"
+      STEP_DELAY_MAX: "4"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      accounts:
+        condition: service_started
+      risk:
+        condition: service_started
+      clearing:
+        condition: service_started
+
+volumes:
+  pgdata:
