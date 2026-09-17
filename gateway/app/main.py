@@ -68,8 +68,9 @@ async def create_transfer(req: TransferRequest):
                 "status": existing["status"] if existing else "UNKNOWN",
                 "message": "reintento reconocido, no se ejecutó de nuevo"}
 
+    modo = "orquestación" if req.mode == "ORCHESTRATION" else "coreografía"
     audit.log(saga_id, "REQUEST", "gateway", "SUCCESS",
-              detail=f"transferencia recibida en modo {req.mode}",
+              detail=f"transferencia recibida · modo {modo}",
               payload={"amount": str(req.amount), **chaos})
 
     if req.mode == "ORCHESTRATION":
@@ -116,10 +117,7 @@ TERMINAL_PREFIXES = ("CONFIRMADO", "RECHAZADO")
 
 @app.get("/sagas/{saga_id}/stream")
 async def stream_saga(saga_id: str):
-    """SSE: empuja cada nuevo paso de la bitácora al dashboard.
-
-    Cuando migremos a Supabase esto se reemplaza por Realtime en saga_log.
-    """
+    """SSE: empuja cada nuevo paso de la bitácora al dashboard."""
     async def event_source():
         last_id = 0
         idle_after_terminal = 0

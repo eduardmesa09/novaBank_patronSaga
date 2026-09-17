@@ -1,5 +1,8 @@
-\connect risk_db
-SET ROLE risk_user;
+-- Servicio de Riesgo y Prevención de Fraude
+--
+-- Se aplica automáticamente al arrancar el contenedor db-risk, que es
+-- el ÚNICO Postgres que este servicio conoce. Ningún otro servicio tiene
+-- credenciales ni ruta de red hacia aquí.
 
 CREATE TABLE daily_limits (
     account_id     TEXT PRIMARY KEY,

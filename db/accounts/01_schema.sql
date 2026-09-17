@@ -1,5 +1,8 @@
-\connect accounts_db
-SET ROLE accounts_user;
+-- Servicio de Cuentas y Saldos
+--
+-- Se aplica automáticamente al arrancar el contenedor db-accounts, que es
+-- el ÚNICO Postgres que este servicio conoce. Ningún otro servicio tiene
+-- credenciales ni ruta de red hacia aquí.
 
 CREATE TABLE accounts (
     id         TEXT PRIMARY KEY,

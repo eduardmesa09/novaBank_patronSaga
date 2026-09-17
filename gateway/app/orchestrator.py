@@ -8,6 +8,7 @@ concentrado en un solo lugar (acoplamiento al orquestador, control total),
 mientras que en coreografía está distribuido entre los servicios
 (bajo acoplamiento, control emergente).
 """
+import json
 import os
 from decimal import Decimal
 
@@ -44,6 +45,21 @@ async def _post(url: str, body: dict) -> tuple[int, dict]:
     return response.status_code, payload
 
 
+def _humanize(detail) -> str:
+    """El detalle llega como dict; en pantalla debe leerse como una frase."""
+    if not isinstance(detail, dict):
+        return str(detail)
+    code = detail.get("code")
+    reason = detail.get("detail") or detail.get("reason")
+    extras = {k: v for k, v in detail.items()
+              if k not in {"code", "detail", "reason"}}
+    parts = [p for p in (code, reason) if p]
+    text = " · ".join(parts) if parts else json.dumps(detail, ensure_ascii=False)
+    if extras:
+        text += " (" + ", ".join(f"{k}: {v}" for k, v in extras.items()) + ")"
+    return text
+
+
 async def _run_step(saga_id: str, step: str, service: str, url: str, body: dict,
                     final_status_on_error: str) -> dict:
     audit.log(saga_id, step, service, "RUNNING")
@@ -51,7 +67,7 @@ async def _run_step(saga_id: str, step: str, service: str, url: str, body: dict,
 
     if status_code >= 400:
         detail = payload.get("detail", payload)
-        audit.log(saga_id, step, service, "FAILED", detail=str(detail),
+        audit.log(saga_id, step, service, "FAILED", detail=_humanize(detail),
                   payload=payload)
         raise StepFailed(step, final_status_on_error, detail)
 

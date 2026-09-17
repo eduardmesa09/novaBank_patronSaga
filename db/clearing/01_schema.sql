@@ -1,5 +1,8 @@
-\connect clearing_db
-SET ROLE clearing_user;
+-- Pasarela Interbancaria
+--
+-- Se aplica automáticamente al arrancar el contenedor db-clearing, que es
+-- el ÚNICO Postgres que este servicio conoce. Ningún otro servicio tiene
+-- credenciales ni ruta de red hacia aquí.
 
 CREATE TABLE settlements (
     saga_id       UUID PRIMARY KEY,

@@ -25,24 +25,36 @@ paso a paso.
  ┌───────────┐  ┌───────────┐  ┌───────────────┐
  │ Accounts  │  │ Risk      │  │ Clearing      │
  │ & Ledger  │  │ & Fraud   │  │ Gateway       │
- ├───────────┤  ├───────────┤  ├───────────────┤
- │accounts_db│  │  risk_db  │  │  clearing_db  │   ← una BD por servicio
- └───────────┘  └───────────┘  └───────────────┘
+ └─────┬─────┘  └─────┬─────┘  └───────┬───────┘
+       │              │                │
+ ┌─────┴─────┐  ┌─────┴─────┐  ┌───────┴───────┐
+ │db-accounts│  │  db-risk  │  │  db-clearing  │  ← un SERVIDOR Postgres
+ │accounts_db│  │  risk_db  │  │  clearing_db  │    por servicio, con su
+ └───────────┘  └───────────┘  └───────────────┘    propio volumen
 
-                 saga_db  ← bitácora de auditoría (saga_log)
+              ┌──────────┐
+              │ db-saga  │  ← bitácora de auditoría (saga_log)
+              │ saga_db  │
+              └──────────┘
 ```
 
-Cada servicio conoce **únicamente** su propia `DATABASE_URL`. No hay claves
-foráneas entre bases: la correlación es por `saga_id`.
+Cada servicio conoce **únicamente** su propia `DATABASE_URL`, que apunta a su
+propio contenedor de Postgres. No hay instancia compartida: un servicio no
+puede alcanzar los datos de otro ni equivocándose, porque no existe credencial
+ni ruta de red que se lo permita. No hay claves foráneas entre bases: la
+correlación es por `saga_id`.
 
 | Componente | Tecnología | Puerto |
 | :--- | :--- | :--- |
-| Frontend + simulador de caos | React 18 · Vite · TypeScript | 5173 |
+| Frontend + simulador de caos | React 18 · Vite · TypeScript · SSE | 5173 |
 | API Gateway | FastAPI · SSE | 8000 |
-| Accounts & Ledger | FastAPI · `accounts_db` | 8001 |
-| Risk & Fraud | FastAPI · `risk_db` | 8002 |
-| Clearing Gateway | FastAPI · `clearing_db` | 8003 |
-| Bitácora de saga | `saga_db` | — |
+| Accounts & Ledger | FastAPI | 8001 |
+| Risk & Fraud | FastAPI | 8002 |
+| Clearing Gateway | FastAPI | 8003 |
+| `db-accounts` · `accounts_db` | Postgres 16 | 5433 |
+| `db-risk` · `risk_db` | Postgres 16 | 5434 |
+| `db-clearing` · `clearing_db` | Postgres 16 | 5435 |
+| `db-saga` · `saga_db` (bitácora) | Postgres 16 | 5436 |
 | Bus de eventos | Redis Streams | 6379 |
 | Observabilidad de flujos | Prefect 3 | 4200 |
 
@@ -51,7 +63,7 @@ foráneas entre bases: la correlación es por `saga_id`.
 Requisitos: Docker Desktop y Node 18+.
 
 ```bash
-# 1. Backend completo (4 bases de datos, 4 servicios, Redis y Prefect)
+# 1. Backend completo (4 servidores de BD, 4 servicios, Redis y Prefect)
 docker compose up -d --build
 
 # 2. Frontend
@@ -66,8 +78,10 @@ npm run dev
 | Gateway · OpenAPI | http://localhost:8000/docs |
 | Prefect UI | http://localhost:4200 |
 
-Las bases de datos se crean y se siembran solas en el primer arranque
-(los scripts de [db/](db/) se ejecutan en orden).
+Cada contenedor de base de datos aplica su propio esquema al arrancar por
+primera vez, desde su carpeta en [db/](db/). Los puertos 5433-5436 se publican
+solo para poder inspeccionar cada base con un cliente SQL; los servicios se
+hablan por la red interna de Compose.
 
 ## Uso
 
@@ -75,10 +89,17 @@ En el simulador: elige la modalidad (**Orquestación** o **Coreografía**), carg
 un escenario de la matriz de pruebas o mueve los switches de caos, y pulsa
 **Ejecutar transferencia**. La línea de tiempo se llena en vivo por SSE; cada
 micro-paso tarda entre 2 y 4 segundos a propósito, para que la marcha atrás sea
-visible.
+visible. Cada paso ocupa **una sola fila que evoluciona** (en ejecución →
+completado / fallido / compensado), y las compensaciones quedan marcadas con su
+etiqueta y su icono de reversa.
 
-El botón **CP-05 · Reintentar mismo UUID** reenvía el `saga_id` anterior y
-demuestra que no hay doble cobro.
+El botón **Reintentar con el mismo identificador** reenvía el `saga_id` anterior
+y demuestra que no hay doble cobro (CP-05).
+
+La pestaña **Historial de operaciones** lista las sagas recientes con su estado;
+desde ahí se abre la traza completa de cualquiera. Además, la operación activa
+queda reflejada en la URL como `?saga=<uuid>`, así que una traza concreta se
+puede recargar o compartir tal cual — útil para el video y para la defensa.
 
 ### Scripts
 
@@ -127,6 +148,13 @@ reevaluar.
 de auditoría del gateway que solo observa el bus. Si se apaga, la saga sigue
 funcionando: se pierde la visibilidad, no la transacción.
 
+**Un servidor de base de datos por servicio, no una instancia compartida.**
+Con cuatro contenedores de Postgres el aislamiento deja de depender de
+permisos bien puestos y pasa a ser estructural: `risk_user` no tiene ruta de
+red hacia `db-accounts`, así que un JOIN entre dominios no es que esté
+prohibido, es que es imposible de escribir. Cuesta unos 200 MB de RAM más que
+una instancia con cuatro bases, y a cambio la frontera es real.
+
 **El código de infraestructura está duplicado a propósito.** `app/common.py` es
 una copia en cada servicio, no una librería compartida. Una librería común
 crearía un acoplamiento de despliegue entre servicios que deben poder
@@ -139,7 +167,10 @@ central es la demostración del patrón.
 ## Estructura
 
 ```
-db/                      esquemas de las 4 bases (se aplican al arrancar)
+db/accounts/             esquema de accounts_db (lo aplica db-accounts)
+db/risk/                 esquema de risk_db
+db/clearing/             esquema de clearing_db
+db/saga/                 esquema de saga_db
 gateway/app/
   main.py                API, SSE y consumidor de auditoría
   orchestrator.py        flow de Prefect · saga ORQUESTADA
@@ -148,23 +179,9 @@ gateway/app/
 services/accounts/app/main.py   débito · crédito · reembolso  + on_event
 services/risk/app/main.py       riesgo · revocación           + on_event
 services/clearing/app/main.py   liquidación · anulación       + on_event
-frontend/src/App.tsx     simulador de caos y línea de tiempo
+frontend/src/App.tsx     simulador de caos, línea de tiempo e historial
+frontend/src/Icons.tsx   iconografía SVG propia
+frontend/src/styles.css  sistema visual de NovaBank
 scripts/                 matriz de pruebas y reinicio del escenario
 docs/                    comparativa orquestación vs. coreografía
 ```
-
-## Migración a Supabase
-
-Las cuatro bases están pensadas para convertirse en cuatro proyectos Supabase
-sin tocar código de dominio:
-
-1. Crear los proyectos `novabank-accounts`, `novabank-risk`,
-   `novabank-clearing` y `novabank-saga`.
-2. Aplicar en cada uno su script de [db/](db/) (sin las líneas `\connect`,
-   `SET ROLE` ni el `00_databases.sql`).
-3. Sustituir cada `DATABASE_URL` del `docker-compose.yml` por la cadena de
-   **Supavisor session mode** del proyecto correspondiente (host
-   `*.pooler.supabase.com`; la conexión directa al 5432 es solo IPv6).
-4. Retirar el servicio `postgres` del compose.
-5. Opcional: reemplazar el SSE de `/sagas/{id}/stream` por Supabase Realtime
-   suscrito a `saga_log`, con RLS de solo lectura para la clave `anon`.

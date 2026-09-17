@@ -37,6 +37,44 @@ El orden inverso no es una convención documentada: es una propiedad estructural
 de la pila. Y solo se apila lo que realmente tuvo éxito, de modo que CP-02
 (fallo en el primer paso) encuentra la pila vacía y no compensa nada.
 
+El flujo completo del CP-04 (caída de la red externa), donde se ve que todas las
+flechas nacen y mueren en el orquestador:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as API Gateway
+    participant O as Orquestador · Prefect
+    participant A as Accounts
+    participant R as Risk
+    participant C as Clearing
+
+    G->>O: transfer_saga(saga_id)
+
+    O->>A: POST /debit
+    A-->>O: 200 · débito aplicado
+    Note right of O: apila ↩ reembolsar débito
+
+    O->>R: POST /assess
+    R-->>O: 200 · riesgo aprobado
+    Note right of O: apila ↩ revocar riesgo
+
+    O->>C: POST /settle
+    C--xO: 504 · CLEARING_TIMEOUT
+
+    Note right of O: vacía la pila en orden inverso
+
+    O->>R: POST /compensate/revoke
+    R-->>O: cupo diario liberado
+    O->>A: POST /compensate/refund
+    A-->>O: saldo restituido
+
+    O->>G: RECHAZADO_RED_COMPENSADO
+```
+
+El orquestador es el único que habla con todos: los servicios no se conocen
+entre sí, pero ninguno avanza sin que él se lo ordene.
+
 ### Coreografía — `on_event` en cada servicio
 
 El gateway publica **un único evento** y deja de participar:
@@ -59,6 +97,36 @@ interesan, y emite el resultado como un nuevo evento:
 
 Ningún servicio aparece dos veces en la misma columna de escucha por el mismo
 evento, y ninguno escucha un evento que él mismo emite: **no hay ciclos**.
+
+Los cinco casos de prueba sobre el mismo grafo de suscripciones. No hay ningún
+nodo central: cada flecha es un evento en el bus, y cada caja decide sola:
+
+```mermaid
+flowchart TD
+    G([API Gateway]) -->|TransferRequested| A1
+
+    A1[Accounts · debita] -->|BalanceDebited| R1[Risk · evalúa]
+    A1 -->|InsufficientFunds| F1([RECHAZADO_FONDOS])
+
+    R1 -->|RiskApproved| C1[Clearing · liquida]
+    R1 -->|RiskRejected| A3
+
+    C1 -->|Settled| A2[Accounts · acredita]
+    A2 -->|TransferConfirmed| OK([CONFIRMADO])
+
+    C1 -->|ClearingFailed| R2[Risk · revoca]
+    R2 -->|RiskRevoked| A3[Accounts · reembolsa]
+    A3 -->|DebitRefunded| CP([saga compensada])
+
+    classDef comp stroke:#a56a00,stroke-width:2px
+    classDef fail stroke:#c02427,stroke-width:2px
+    class R2,A3,CP comp
+    class F1 fail
+```
+
+La rama en ámbar es la clave y merece leerse despacio: `ClearingFailed` no llega
+a Accounts, llega a Risk. Es `RiskRevoked` —el evento que Risk emite *después*
+de compensar lo suyo— el que despierta a Accounts.
 
 ### El problema difícil de la coreografía: el orden inverso
 

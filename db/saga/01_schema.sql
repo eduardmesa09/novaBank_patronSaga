@@ -1,5 +1,8 @@
-\connect saga_db
-SET ROLE saga_user;
+-- Bitácora de sagas (capa coordinadora)
+--
+-- Se aplica automáticamente al arrancar el contenedor db-saga, que es
+-- el ÚNICO Postgres que este servicio conoce. Ningún otro servicio tiene
+-- credenciales ni ruta de red hacia aquí.
 
 -- Estado de la saga. En coreografia NO es un coordinador:
 -- lo escribe un consumidor de auditoria que solo observa el bus.
