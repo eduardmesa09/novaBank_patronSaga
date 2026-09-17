@@ -185,3 +185,7 @@ frontend/src/styles.css  sistema visual de NovaBank
 scripts/                 matriz de pruebas y reinicio del escenario
 docs/                    comparativa orquestación vs. coreografía
 ```
+# Integrantes
+
+- Eduard Meza Salazar
+- Juan José Campos Covaleda   
