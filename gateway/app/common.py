@@ -1,4 +1,5 @@
 """Infraestructura compartida por copia (no por libreria): cada servicio es autonomo."""
+
 import asyncio
 import json
 import os
@@ -33,8 +34,10 @@ async def step_delay() -> float:
 # --------------------------------------------------------------------------
 def recall(conn, saga_id: str, operation: str) -> dict | None:
     row = conn.execute(
-        text("SELECT response FROM processed_operations "
-             "WHERE saga_id = :s AND operation = :o"),
+        text(
+            "SELECT response FROM processed_operations "
+            "WHERE saga_id = :s AND operation = :o"
+        ),
         {"s": saga_id, "o": operation},
     ).fetchone()
     return row[0] if row else None
@@ -42,8 +45,10 @@ def recall(conn, saga_id: str, operation: str) -> dict | None:
 
 def remember(conn, saga_id: str, operation: str, response: dict) -> None:
     conn.execute(
-        text("INSERT INTO processed_operations (saga_id, operation, response) "
-             "VALUES (:s, :o, CAST(:r AS jsonb)) ON CONFLICT DO NOTHING"),
+        text(
+            "INSERT INTO processed_operations (saga_id, operation, response) "
+            "VALUES (:s, :o, CAST(:r AS jsonb)) ON CONFLICT DO NOTHING"
+        ),
         {"s": saga_id, "o": operation, "r": json.dumps(response)},
     )
 
@@ -52,13 +57,16 @@ def remember(conn, saga_id: str, operation: str, response: dict) -> None:
 # Bus de eventos (Redis Streams) para la saga coreografiada.
 # --------------------------------------------------------------------------
 async def publish(event_type: str, saga_id: str, payload: dict | None = None) -> str:
-    return await redis.xadd(EVENT_STREAM, {
-        "event_id": str(uuid.uuid4()),
-        "type": event_type,
-        "saga_id": saga_id,
-        "emitter": SERVICE_NAME,
-        "payload": json.dumps(payload or {}),
-    })
+    return await redis.xadd(
+        EVENT_STREAM,
+        {
+            "event_id": str(uuid.uuid4()),
+            "type": event_type,
+            "saga_id": saga_id,
+            "emitter": SERVICE_NAME,
+            "payload": json.dumps(payload or {}),
+        },
+    )
 
 
 async def ensure_group(group: str) -> None:
@@ -79,14 +87,17 @@ async def consume(group: str, handler, interested: set[str]) -> None:
     while True:
         try:
             batches = await redis.xreadgroup(
-                group, consumer, {EVENT_STREAM: ">"}, count=10, block=5000)
+                group, consumer, {EVENT_STREAM: ">"}, count=10, block=5000
+            )
             for _stream, messages in batches or []:
                 for msg_id, raw in messages:
                     try:
                         if raw.get("type") in interested:
                             await handler(
-                                raw["type"], raw["saga_id"],
-                                json.loads(raw.get("payload") or "{}"))
+                                raw["type"],
+                                raw["saga_id"],
+                                json.loads(raw.get("payload") or "{}"),
+                            )
                     except Exception as exc:  # noqa: BLE001
                         print(f"[{group}] error procesando {msg_id}: {exc}", flush=True)
                     finally:

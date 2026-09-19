@@ -112,7 +112,25 @@ async def get_saga(saga_id: str):
     return {"saga": saga, "log": audit.get_log(saga_id)}
 
 
-TERMINAL_PREFIXES = ("CONFIRMADO", "RECHAZADO")
+# Un estado es final solo cuando ya no puede llegar nada más:
+#   CONFIRMADO        el camino feliz terminó
+#   RECHAZADO_FONDOS  falló el primer paso, no hay nada que compensar
+#   *_COMPENSADO      la compensación terminó
+#
+# OJO con el caso que nos mordió: RECHAZADO_RED (o _RIESGO) a secas NO es
+# final. Se escribe en cuanto falla el paso, pero sus compensaciones tardan
+# todavía entre 2 y 8 segundos en llegar. Tratarlo como final cerraba el
+# stream antes de tiempo y el navegador se quedaba sin los últimos pasos,
+# aunque el backend sí los hubiera ejecutado.
+FINALES_EXACTOS = {"CONFIRMADO", "RECHAZADO_FONDOS"}
+
+INTERVALO_S = 0.4
+CICLOS_CIERRE = 5    # 2 s de silencio tras un estado final
+CICLOS_ABANDONO = 75  # 30 s sin novedad: la saga está atascada
+
+
+def _es_final(status: str) -> bool:
+    return status in FINALES_EXACTOS or status.endswith("_COMPENSADO")
 
 
 @app.get("/sagas/{saga_id}/stream")
@@ -120,7 +138,8 @@ async def stream_saga(saga_id: str):
     """SSE: empuja cada nuevo paso de la bitácora al dashboard."""
     async def event_source():
         last_id = 0
-        idle_after_terminal = 0
+        last_status = None
+        quietud = 0  # ciclos consecutivos sin ninguna novedad
 
         while True:
             saga = audit.get_saga(saga_id)
@@ -128,23 +147,35 @@ async def stream_saga(saga_id: str):
                 yield f"event: error\ndata: {json.dumps({'code': 'NOT_FOUND'})}\n\n"
                 return
 
+            novedad = False
+
             for row in audit.get_log(saga_id, after_id=last_id):
                 last_id = row["id"]
+                novedad = True
                 yield f"event: step\ndata: {json.dumps(row, default=str)}\n\n"
+
+            if saga["status"] != last_status:
+                last_status = saga["status"]
+                novedad = True
 
             yield f"event: saga\ndata: {json.dumps(saga, default=str)}\n\n"
 
-            terminal = saga["status"].startswith(TERMINAL_PREFIXES)
-            if terminal:
-                # Margen para que lleguen las compensaciones pendientes.
-                idle_after_terminal += 1
-                if idle_after_terminal > 12:
-                    yield "event: done\ndata: {}\n\n"
-                    return
-            else:
-                idle_after_terminal = 0
+            quietud = 0 if novedad else quietud + 1
 
-            await asyncio.sleep(0.4)
+            # Cerramos solo con un estado final Y un margen de silencio: así
+            # nunca se corta una compensación que venía en camino.
+            if _es_final(last_status) and quietud >= CICLOS_CIERRE:
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            # Válvula de seguridad: si una compensación falla, la saga se queda
+            # en un estado no final para siempre. Cerramos para no dejar al
+            # navegador esperando indefinidamente.
+            if quietud >= CICLOS_ABANDONO:
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            await asyncio.sleep(INTERVALO_S)
 
     return StreamingResponse(event_source(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
